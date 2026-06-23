@@ -1,0 +1,26 @@
+# claudestat — podman kube spec for the status-page push daemon.
+#
+# Start the pod:   podman kube play claudestat.yaml
+# Stop the pod:    podman kube down claudestat.yaml
+# Replace running: podman kube play --replace claudestat.yaml
+# Container logs:  podman logs -f claudestat-tidbyt
+#
+# Image is built by scripts/build-container.sh, which bakes config.yaml in
+# at build time.
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: claudestat
+  labels:
+    app: claudestat
+spec:
+  restartPolicy: Always
+  containers:
+    - name: tidbyt
+      image: localhost/claudestat:latest
+      env:
+        - name: PUSH_INTERVAL_S
+          value: "600"
+      securityContext:
+        readOnlyRootFilesystem: false

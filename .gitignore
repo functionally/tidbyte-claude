@@ -1,0 +1,5 @@
+config.yaml
+out.webp
+result
+result-*
+.direnv/
