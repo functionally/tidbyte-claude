@@ -60,17 +60,29 @@ Frame 2 (~5 s) — full-width incident view, big tile dropped:
 
 ```
 ┌─────────────────────────────────────┐
-│ Elevated error rate across multip…  │  ← marquee, width 62
-│                                     │
-│              critical               │  ← impact (colored, centered)
-│                                     │
+│ We've suspended       (row 1)       │  ← 2 monospace rows; short titles
+│  access to Cla        (row 2)       │     static, long titles scroll in
+│              critical               │     a 2-row "wrapping marquee"
 │▓ 24m ago  5 hit ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│  ← age + count, full-width colored band
 └─────────────────────────────────────┘
 ```
 
-The big severity tile is redundant on the incident frame — the impact word is already colored by the same scheme — so dropping it gives the marquee 62 px instead of 34, which is enough that medium-length incident titles render statically rather than scrolling. The animation runs at ~5 s per frame (`GRID_FRAMES = INCIDENT_FRAMES = 100` at pixlet's 20 fps default). When no incident is open, no animation — just the static grid.
+The big severity tile is redundant on the incident frame — the impact word is already colored by the same scheme — so dropping it gives the title block 60 px wide. The title block uses `CG-pixel-4x5-mono`, a fixed-width 4 px × 5 px font, so 60 / 4 = exactly 15 characters per row and 2 rows is exactly 10 px tall. The fixed pitch is what makes the wrapping-marquee construction below land on clean pixel boundaries.
 
-Three tom-thumb lines on the incident frame: marquee name top-aligned, colored impact word ("minor" / "major" / "critical" / "maint") horizontally centered in the middle, and a combined `<age> ago  <N> hit` row on a full-width colored band at the bottom. The band uses the same `INDICATOR_COLORS[indicator]` (bg, fg) pair as the frame-1 big tile, so the severity color and the contrast-flipped text color carry from one frame to the other. Avoided a Row + `space_between` for impact/age earlier — at tom-thumb widths long words like "critical" and "24m ago" don't fit side by side in narrow columns and end up overlapping.
+Three-tier rendering:
+
+1. **`len(name) ≤ 15`** — 1 line, static, in a one-child `Column`.
+2. **`len(name) ≤ 30`** — 2 lines, greedy word-wrapped via `_wrap_words`, static, in a two-child `Column`.
+3. **`len(name) > 30`** — **2-row wrapping marquee.** Both rows are horizontal `Marquee(width=60)` widgets whose `child` is the same padded text (`name + " " * 15`), except row 2's text is the same string rotated by 15 chars: `row2 = padded[15:] + padded[:15]`. Because pixlet's Marquee scrolls at a fixed 1 px / frame keyed to the global frame counter, and both marquees have identical natural widths (`(len(name) + 15) * 4` px), they tick in lockstep. Visual effect: row 1 displays chars `0..14`, row 2 displays chars `15..29` at t = 0, both scroll left in sync, and when row 1 finishes the title it lands on the 15-char trailing pad (visual blank) while row 2 wraps cleanly to the title's beginning — the text appears to flow row 1 → row 2 → loop back to row 1 in a continuous reading order.
+
+Earlier iterations that didn't work, kept here so we don't relearn the same lessons:
+
+- `Marquee(scroll_direction="vertical", height=12) > WrappedText(width=62)` — WrappedText clips to 2 lines and never advertises a taller natural height, so Marquee thinks the child already fits.
+- `Marquee(scroll_direction="vertical", height=12) > Column[Text, Text, ...]` — Column has a concrete `N * 6 px` natural height, but pixlet 0.34's **vertical** Marquee doesn't reliably advance its scroll position when nested inside the outer `render.Animation`. Horizontal Marquee, used above, doesn't have this problem.
+
+The animation cycle is **6.65 s total**: `GRID_FRAMES = 40` (2 s, 30% of cycle) and `INCIDENT_FRAMES = 93` (4.65 s, 70% of cycle) at pixlet's 20 fps default. The 70 / 30 weighting buys the title marquee more reading time; the relatively short total cycle means the cycle re-starts ~2× per Tidbyt 15 s slot. When no incident is open, no animation — just the static grid.
+
+Layout on the incident frame: 12 px vertical-scroll title block at top, colored impact word ("minor" / "major" / "critical" / "maint") horizontally centered in the middle, and a combined `<age> ago  <N> hit` row on a full-width colored band at the bottom. The band uses the same `INDICATOR_COLORS[indicator]` (bg, fg) pair as the frame-1 big tile, so the severity color and the contrast-flipped text color carry from one frame to the other. Avoided a Row + `space_between` for impact/age earlier — at tom-thumb widths long words like "critical" and "24m ago" don't fit side by side in narrow columns and end up overlapping.
 
 ### Five-row cap
 

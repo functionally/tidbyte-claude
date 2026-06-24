@@ -104,8 +104,26 @@ MAX_COMPONENT_ROWS = 5
 # Two-frame animation: right column alternates between the component
 # grid and the active-incident panel. Pixlet renders Animation children
 # at 20 fps (50 ms each), so these are dwell counts in 50 ms units.
-GRID_FRAMES = 100
-INCIDENT_FRAMES = 100
+# Total cycle is 6.65 s (50% faster than the original 10 s) — the cycle
+# repeats more often so the marquee re-starts more often during a
+# Tidbyt slot. Incident frame takes 70% of the cycle so long titles
+# have enough time to scroll fully across the 62 px visible window
+# (~10 s at pixlet's fixed 1 px / frame scroll rate, so at 4.65 s per
+# visit the title scrolls about halfway, and the next visit picks up
+# from the start — across 2-3 visits per Tidbyt slot the user reads
+# the whole thing).
+GRID_FRAMES = 40
+INCIDENT_FRAMES = 93
+
+# Incident title rendering. Uses a fixed-width font (CG-pixel-4x5-mono,
+# 4 px × 5 px) so rotation between rows lands on exact pixel boundaries
+# with no drift — required by the 2-row wrapping-marquee approach for
+# long titles below.
+TITLE_FONT = "CG-pixel-4x5-mono"
+TITLE_CHAR_W = 4
+TITLE_CHAR_H = 5
+TITLE_PANEL_W = 60  # multiple of TITLE_CHAR_W for clean alignment
+TITLE_CHARS_PER_ROW = TITLE_PANEL_W // TITLE_CHAR_W  # 15
 
 def fetch_summary():
     print("[fetch] GET %s ttl=%d" % (SUMMARY_URL, SUMMARY_TTL_S))
@@ -212,6 +230,82 @@ def _big_tile(indicator, affected_count, oldest_age_s):
         )
     return render.Box(width = 28, height = 32, color = bg, child = body)
 
+def _wrap_words(text, chars_per_line):
+    """Greedy word wrap into a list of line strings. Words longer than
+    chars_per_line take their own line unbroken (we'd rather overflow a
+    long single word than break it mid-character)."""
+    if text == None:
+        return [""]
+    words = text.split(" ")
+    lines = []
+    current = ""
+    for w in words:
+        if current == "":
+            candidate = w
+        else:
+            candidate = current + " " + w
+        if len(candidate) <= chars_per_line:
+            current = candidate
+        else:
+            if current != "":
+                lines.append(current)
+            current = w
+    if current != "":
+        lines.append(current)
+    if len(lines) == 0:
+        return [""]
+    return lines
+
+def _title_block(name):
+    """Three-tier title rendering with a fixed-width font:
+
+    1. <= 15 chars : 1 line, static.
+    2. <= 30 chars : 2 lines, word-wrapped, static.
+    3. >  30 chars : 2-row 'wrapping marquee'. Both rows are horizontal
+       Marquees over the same text padded with TITLE_CHARS_PER_ROW
+       trailing spaces. Row 2's text is the row-1 text rotated by
+       TITLE_CHARS_PER_ROW characters, so at t=0 row 1 displays chars
+       0..14 and row 2 displays chars 15..29. Both marquees scroll at
+       pixlet's fixed 1 px/frame on the same global frame counter and
+       both have identical natural widths, so they tick in lockstep —
+       row 2 always shows the text that comes one window-width after
+       row 1's current view. The trailing pad means that as row 1
+       finishes the title, row 2 wraps cleanly to the title's
+       beginning with blank space on row 1 covering the seam.
+       Monospace font means rotation by N chars is exactly N * CHAR_W
+       pixels, so there's no inter-row pixel drift."""
+    if len(name) <= TITLE_CHARS_PER_ROW:
+        return render.Column(
+            children = [render.Text(name, color = FG_WHITE, font = TITLE_FONT)],
+        )
+    # 1 px transparent spacer between the two rows so the descenderless
+    # 5 px glyphs don't visually merge into one stripe.
+    row_gap = render.Box(width = 1, height = 1)
+    if len(name) <= TITLE_CHARS_PER_ROW * 2:
+        lines = _wrap_words(name, TITLE_CHARS_PER_ROW)
+        children = [render.Text(lines[0], color = FG_WHITE, font = TITLE_FONT)]
+        if len(lines) > 1:
+            children.append(row_gap)
+            children.append(render.Text(lines[1], color = FG_WHITE, font = TITLE_FONT))
+        return render.Column(children = children)
+    pad = " " * TITLE_CHARS_PER_ROW
+    padded = name + pad
+    row1 = padded
+    row2 = padded[TITLE_CHARS_PER_ROW:] + padded[:TITLE_CHARS_PER_ROW]
+    return render.Column(
+        children = [
+            render.Marquee(
+                width = TITLE_PANEL_W,
+                child = render.Text(row1, color = FG_WHITE, font = TITLE_FONT),
+            ),
+            row_gap,
+            render.Marquee(
+                width = TITLE_PANEL_W,
+                child = render.Text(row2, color = FG_WHITE, font = TITLE_FONT),
+            ),
+        ],
+    )
+
 def _incident_panel(inc, indicator):
     name = inc.get("name", "?")
     impact = inc.get("impact", "?")
@@ -229,10 +323,7 @@ def _incident_panel(inc, indicator):
         children = [
             render.Padding(
                 pad = (1, 1, 1, 0),
-                child = render.Marquee(
-                    width = 62,
-                    child = render.Text(name, color = FG_WHITE, font = "tom-thumb"),
-                ),
+                child = _title_block(name),
             ),
             render.Row(
                 expanded = True,
