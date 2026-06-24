@@ -98,30 +98,26 @@ DISPLAY_PRIORITY = {
 # operational component (Gov in practice).
 MAX_COMPONENT_ROWS = 5
 
-# Two-frame animation: right column alternates between the component
+# Two-frame animation: the display alternates between the component
 # grid and the active-incident panel. Pixlet renders Animation children
 # at 20 fps (50 ms each), so these are dwell counts in 50 ms units.
-# Total cycle is 6.65 s (50% faster than the original 10 s) — the cycle
-# repeats more often so the marquee re-starts more often during a
-# Tidbyt slot. Incident frame takes 70% of the cycle so long titles
-# have enough time to scroll fully across the 62 px visible window
-# (~10 s at pixlet's fixed 1 px / frame scroll rate, so at 4.65 s per
-# visit the title scrolls about halfway, and the next visit picks up
-# from the start — across 2-3 visits per Tidbyt slot the user reads
-# the whole thing).
-GRID_FRAMES = 40
-INCIDENT_FRAMES = 93
+# Total cycle is 14.5 s to fit the Tidbyt's ~15 s app slot in one play
+# (shorter cycles loop multiple times per slot, which is distracting
+# when the content is static). Incident frame takes 70% of the cycle.
+GRID_FRAMES = 87
+INCIDENT_FRAMES = 203
 
-# Incident title rendering. Uses a fixed-width font (CG-pixel-3x5-mono,
-# 3 px × 5 px) so word-wrap math is straightforward and 4 wrapped rows
-# fit the 32 px panel height comfortably: 4 * 5 + 3 * 1 = 23 px of
-# title + 7 px bottom band + 2 px slack. 60 / 3 = 20 chars per row gives
-# enough room for typical incident titles to fit in 3-4 rows.
+# Incident title rendering. Uses CG-pixel-3x5-mono — despite the "3x5"
+# in the name, pixlet renders this font with an advance width of 4 px
+# per character (verified by inspecting a rendered frame: "MYTHOS 5
+# AND CLAUDE", 19 chars, ran 16 px past the 60 px panel = 76 px = 4 px/
+# char). So 60 / 4 = 15 chars per row. Four rows: 4*5 + 3*1 = 23 px of
+# title + 7 px bottom band + 2 px slack = 32 px total.
 TITLE_FONT = "CG-pixel-3x5-mono"
-TITLE_CHAR_W = 3
+TITLE_CHAR_W = 4
 TITLE_CHAR_H = 5
-TITLE_PANEL_W = 60  # multiple of TITLE_CHAR_W for clean alignment
-TITLE_CHARS_PER_ROW = TITLE_PANEL_W // TITLE_CHAR_W  # 20
+TITLE_PANEL_W = 60
+TITLE_CHARS_PER_ROW = TITLE_PANEL_W // TITLE_CHAR_W  # 15
 TITLE_MAX_ROWS = 4
 
 def fetch_summary():
@@ -229,6 +225,44 @@ def _big_tile(indicator, affected_count, oldest_age_s):
         )
     return render.Box(width = 28, height = 32, color = bg, child = body)
 
+def _normalize_title(text):
+    """Map typographic Unicode to ASCII so:
+    (a) Starlark's byte-based len() matches visual char count, and
+    (b) the BDF monospace font reliably has a glyph for every char.
+    Without this, StatusPage's right-single-quote (U+2019, 3 bytes
+    in UTF-8) causes the wrap math to over-count and the rendered
+    glyph to fall back to a substitution character."""
+    if text == None:
+        return ""
+    return (text
+        .replace("’", "'")
+        .replace("‘", "'")
+        .replace("“", "\"")
+        .replace("”", "\"")
+        .replace("–", "-")
+        .replace("—", "-")
+        .replace("…", "..."))
+
+def _wrap_for_display(text, chars_per_line, max_rows):
+    """Greedy word-wrap first. If that produces more than max_rows
+    lines, fall back to character-level chunking — splits words
+    across line boundaries but keeps the full title visible. If even
+    that exceeds the row budget, truncate the last line with '...'."""
+    lines = _wrap_words(text, chars_per_line)
+    if len(lines) <= max_rows:
+        return lines
+    chunks = []
+    n = (len(text) + chars_per_line - 1) // chars_per_line
+    for i in range(n):
+        chunks.append(text[i * chars_per_line:(i + 1) * chars_per_line])
+    if len(chunks) > max_rows:
+        chunks = chunks[:max_rows]
+        last = chunks[-1]
+        if len(last) + 3 > chars_per_line:
+            last = last[:chars_per_line - 3]
+        chunks[-1] = last + "..."
+    return chunks
+
 def _wrap_words(text, chars_per_line):
     """Greedy word wrap into a list of line strings. Words longer than
     chars_per_line take their own line unbroken (we'd rather overflow a
@@ -257,19 +291,14 @@ def _wrap_words(text, chars_per_line):
 
 def _title_block(name, impact):
     """Word-wrapped, fixed-width title in the impact-severity color.
-    Up to TITLE_MAX_ROWS rows are shown; longer titles are truncated
-    at the end of the last visible row with an ellipsis. Lines are
-    separated by a 1 px transparent spacer so the descenderless 5 px
-    glyphs don't visually merge into a single stripe."""
+    Up to TITLE_MAX_ROWS rows are shown. If word-wrap produces too
+    many lines, _wrap_for_display falls back to char-level chunking
+    so the full title still fits (at the cost of breaking some
+    words). Lines are separated by a 1 px transparent spacer so the
+    descenderless 5 px glyphs don't visually merge."""
     color = IMPACT_COLOR.get(impact, FG_WHITE)
-    lines = _wrap_words(name, TITLE_CHARS_PER_ROW)
-    if len(lines) > TITLE_MAX_ROWS:
-        lines = lines[:TITLE_MAX_ROWS]
-        last = lines[-1]
-        ellipsis = "..."
-        if len(last) + len(ellipsis) > TITLE_CHARS_PER_ROW:
-            last = last[:TITLE_CHARS_PER_ROW - len(ellipsis)]
-        lines[-1] = last + ellipsis
+    text = _normalize_title(name)
+    lines = _wrap_for_display(text, TITLE_CHARS_PER_ROW, TITLE_MAX_ROWS)
     children = []
     for i in range(len(lines)):
         if i > 0:
