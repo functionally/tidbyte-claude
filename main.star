@@ -61,9 +61,6 @@ IMPACT_COLOR = {
     "critical": "#FF0000",
 }
 
-# Abbreviate impact labels that would overflow the 34 px panel width in
-# tom-thumb. Only "maintenance" actually overflows; the others fit.
-IMPACT_SHORT = {"maintenance": "maint"}
 
 UNKNOWN_COLOR = "#888888"
 FG_WHITE = "#FFFFFF"
@@ -115,15 +112,17 @@ MAX_COMPONENT_ROWS = 5
 GRID_FRAMES = 40
 INCIDENT_FRAMES = 93
 
-# Incident title rendering. Uses a fixed-width font (CG-pixel-4x5-mono,
-# 4 px × 5 px) so rotation between rows lands on exact pixel boundaries
-# with no drift — required by the 2-row wrapping-marquee approach for
-# long titles below.
-TITLE_FONT = "CG-pixel-4x5-mono"
-TITLE_CHAR_W = 4
+# Incident title rendering. Uses a fixed-width font (CG-pixel-3x5-mono,
+# 3 px × 5 px) so word-wrap math is straightforward and 4 wrapped rows
+# fit the 32 px panel height comfortably: 4 * 5 + 3 * 1 = 23 px of
+# title + 7 px bottom band + 2 px slack. 60 / 3 = 20 chars per row gives
+# enough room for typical incident titles to fit in 3-4 rows.
+TITLE_FONT = "CG-pixel-3x5-mono"
+TITLE_CHAR_W = 3
 TITLE_CHAR_H = 5
 TITLE_PANEL_W = 60  # multiple of TITLE_CHAR_W for clean alignment
-TITLE_CHARS_PER_ROW = TITLE_PANEL_W // TITLE_CHAR_W  # 15
+TITLE_CHARS_PER_ROW = TITLE_PANEL_W // TITLE_CHAR_W  # 20
+TITLE_MAX_ROWS = 4
 
 def fetch_summary():
     print("[fetch] GET %s ttl=%d" % (SUMMARY_URL, SUMMARY_TTL_S))
@@ -256,65 +255,37 @@ def _wrap_words(text, chars_per_line):
         return [""]
     return lines
 
-def _title_block(name):
-    """Three-tier title rendering with a fixed-width font:
-
-    1. <= 15 chars : 1 line, static.
-    2. <= 30 chars : 2 lines, word-wrapped, static.
-    3. >  30 chars : 2-row 'wrapping marquee'. Both rows are horizontal
-       Marquees over the same text padded with TITLE_CHARS_PER_ROW
-       trailing spaces. Row 2's text is the row-1 text rotated by
-       TITLE_CHARS_PER_ROW characters, so at t=0 row 1 displays chars
-       0..14 and row 2 displays chars 15..29. Both marquees scroll at
-       pixlet's fixed 1 px/frame on the same global frame counter and
-       both have identical natural widths, so they tick in lockstep —
-       row 2 always shows the text that comes one window-width after
-       row 1's current view. The trailing pad means that as row 1
-       finishes the title, row 2 wraps cleanly to the title's
-       beginning with blank space on row 1 covering the seam.
-       Monospace font means rotation by N chars is exactly N * CHAR_W
-       pixels, so there's no inter-row pixel drift."""
-    if len(name) <= TITLE_CHARS_PER_ROW:
-        return render.Column(
-            children = [render.Text(name, color = FG_WHITE, font = TITLE_FONT)],
-        )
-    # 1 px transparent spacer between the two rows so the descenderless
-    # 5 px glyphs don't visually merge into one stripe.
-    row_gap = render.Box(width = 1, height = 1)
-    if len(name) <= TITLE_CHARS_PER_ROW * 2:
-        lines = _wrap_words(name, TITLE_CHARS_PER_ROW)
-        children = [render.Text(lines[0], color = FG_WHITE, font = TITLE_FONT)]
-        if len(lines) > 1:
-            children.append(row_gap)
-            children.append(render.Text(lines[1], color = FG_WHITE, font = TITLE_FONT))
-        return render.Column(children = children)
-    pad = " " * TITLE_CHARS_PER_ROW
-    padded = name + pad
-    row1 = padded
-    row2 = padded[TITLE_CHARS_PER_ROW:] + padded[:TITLE_CHARS_PER_ROW]
-    return render.Column(
-        children = [
-            render.Marquee(
-                width = TITLE_PANEL_W,
-                child = render.Text(row1, color = FG_WHITE, font = TITLE_FONT),
-            ),
-            row_gap,
-            render.Marquee(
-                width = TITLE_PANEL_W,
-                child = render.Text(row2, color = FG_WHITE, font = TITLE_FONT),
-            ),
-        ],
-    )
+def _title_block(name, impact):
+    """Word-wrapped, fixed-width title in the impact-severity color.
+    Up to TITLE_MAX_ROWS rows are shown; longer titles are truncated
+    at the end of the last visible row with an ellipsis. Lines are
+    separated by a 1 px transparent spacer so the descenderless 5 px
+    glyphs don't visually merge into a single stripe."""
+    color = IMPACT_COLOR.get(impact, FG_WHITE)
+    lines = _wrap_words(name, TITLE_CHARS_PER_ROW)
+    if len(lines) > TITLE_MAX_ROWS:
+        lines = lines[:TITLE_MAX_ROWS]
+        last = lines[-1]
+        ellipsis = "..."
+        if len(last) + len(ellipsis) > TITLE_CHARS_PER_ROW:
+            last = last[:TITLE_CHARS_PER_ROW - len(ellipsis)]
+        lines[-1] = last + ellipsis
+    children = []
+    for i in range(len(lines)):
+        if i > 0:
+            children.append(render.Box(width = 1, height = 1))
+        children.append(render.Text(lines[i], color = color, font = TITLE_FONT))
+    return render.Column(children = children)
 
 def _incident_panel(inc, indicator):
     name = inc.get("name", "?")
     impact = inc.get("impact", "?")
-    impact_label = IMPACT_SHORT.get(impact, impact)
     age_str = _format_age(_incident_age_s(inc))
     affected = inc.get("components") or []
     # The bottom row uses the big tile's indicator colors so the severity
     # signal carries across the two frames; the colored band echoes the
-    # frame-1 left tile.
+    # frame-1 left tile. The title itself carries the impact color in
+    # the body of the panel, so we don't need a separate impact-word row.
     bottom_bg, bottom_fg = INDICATOR_COLORS.get(indicator, ("#444444", FG_WHITE))
     bottom_text = age_str + " ago  " + str(len(affected)) + " hit"
     return render.Column(
@@ -323,12 +294,7 @@ def _incident_panel(inc, indicator):
         children = [
             render.Padding(
                 pad = (1, 1, 1, 0),
-                child = _title_block(name),
-            ),
-            render.Row(
-                expanded = True,
-                main_align = "center",
-                children = [render.Text(impact_label, color = IMPACT_COLOR.get(impact, FG_WHITE), font = "tom-thumb")],
+                child = _title_block(name, impact),
             ),
             render.Box(
                 width = 64,
