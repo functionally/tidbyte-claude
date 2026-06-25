@@ -107,18 +107,14 @@ MAX_COMPONENT_ROWS = 5
 GRID_FRAMES = 87
 INCIDENT_FRAMES = 203
 
-# Incident title rendering. Uses CG-pixel-3x5-mono — despite the "3x5"
-# in the name, pixlet renders this font with an advance width of 4 px
-# per character (verified by inspecting a rendered frame: "MYTHOS 5
-# AND CLAUDE", 19 chars, ran 16 px past the 60 px panel = 76 px = 4 px/
-# char). So 60 / 4 = 15 chars per row. Four rows: 4*5 + 3*1 = 23 px of
-# title + 7 px bottom band + 2 px slack = 32 px total.
-TITLE_FONT = "CG-pixel-3x5-mono"
-TITLE_CHAR_W = 4
-TITLE_CHAR_H = 5
-TITLE_PANEL_W = 60
-TITLE_CHARS_PER_ROW = TITLE_PANEL_W // TITLE_CHAR_W  # 15
-TITLE_MAX_ROWS = 4
+# Incident frame: up to 4 full-width horizontal-marquee rows stacked
+# above a 7 px colored status bar at the bottom (same indicator-color
+# bar the AQ app uses for the smoke band). Each marquee row is 64 × 6
+# (tom-thumb glyph height), so 4 * 6 + 1 px gap + 7 px bar = 32 px.
+INCIDENT_ROWS_MAX = 4
+INCIDENT_ROW_W = 64
+INCIDENT_ROW_H = 6
+STATUS_BAR_H = 7
 
 def fetch_summary():
     print("[fetch] GET %s ttl=%d" % (SUMMARY_URL, SUMMARY_TTL_S))
@@ -226,12 +222,9 @@ def _big_tile(indicator, affected_count, oldest_age_s):
     return render.Box(width = 28, height = 32, color = bg, child = body)
 
 def _normalize_title(text):
-    """Map typographic Unicode to ASCII so:
-    (a) Starlark's byte-based len() matches visual char count, and
-    (b) the BDF monospace font reliably has a glyph for every char.
-    Without this, StatusPage's right-single-quote (U+2019, 3 bytes
-    in UTF-8) causes the wrap math to over-count and the rendered
-    glyph to fall back to a substitution character."""
+    """Map typographic Unicode to ASCII so the BDF tom-thumb font has a
+    glyph for every char and Starlark's byte-based len() matches the
+    visual char count (matters when text contains U+2019 etc.)."""
     if text == None:
         return ""
     return (text
@@ -243,98 +236,65 @@ def _normalize_title(text):
         .replace("—", "-")
         .replace("…", "..."))
 
-def _wrap_for_display(text, chars_per_line, max_rows):
-    """Greedy word-wrap first. If that produces more than max_rows
-    lines, fall back to character-level chunking — splits words
-    across line boundaries but keeps the full title visible. If even
-    that exceeds the row budget, truncate the last line with '...'."""
-    lines = _wrap_words(text, chars_per_line)
-    if len(lines) <= max_rows:
-        return lines
-    chunks = []
-    n = (len(text) + chars_per_line - 1) // chars_per_line
-    for i in range(n):
-        chunks.append(text[i * chars_per_line:(i + 1) * chars_per_line])
-    if len(chunks) > max_rows:
-        chunks = chunks[:max_rows]
-        last = chunks[-1]
-        if len(last) + 3 > chars_per_line:
-            last = last[:chars_per_line - 3]
-        chunks[-1] = last + "..."
-    return chunks
+def _top_incidents(incidents, n):
+    """Sort open incidents by impact (worst first), then by recency
+    (newest first as tiebreaker), and take the first n."""
+    return sorted(incidents, key = lambda i: (
+        -IMPACT_RANK.get(i.get("impact", ""), -1),
+        # ISO timestamps sort lexicographically, so negating via reverse
+        # is awkward — invert by comparing to a max sentinel.
+        "~" if not i.get("created_at") else "",
+        -1 * int(_incident_age_s(i) or 0),
+    ))[:n]
 
-def _wrap_words(text, chars_per_line):
-    """Greedy word wrap into a list of line strings. Words longer than
-    chars_per_line take their own line unbroken (we'd rather overflow a
-    long single word than break it mid-character)."""
-    if text == None:
-        return [""]
-    words = text.split(" ")
-    lines = []
-    current = ""
-    for w in words:
-        if current == "":
-            candidate = w
-        else:
-            candidate = current + " " + w
-        if len(candidate) <= chars_per_line:
-            current = candidate
-        else:
-            if current != "":
-                lines.append(current)
-            current = w
-    if current != "":
-        lines.append(current)
-    if len(lines) == 0:
-        return [""]
-    return lines
-
-def _title_block(name, impact):
-    """Word-wrapped, fixed-width title in the impact-severity color.
-    Up to TITLE_MAX_ROWS rows are shown. If word-wrap produces too
-    many lines, _wrap_for_display falls back to char-level chunking
-    so the full title still fits (at the cost of breaking some
-    words). Lines are separated by a 1 px transparent spacer so the
-    descenderless 5 px glyphs don't visually merge."""
-    color = IMPACT_COLOR.get(impact, FG_WHITE)
-    text = _normalize_title(name)
-    lines = _wrap_for_display(text, TITLE_CHARS_PER_ROW, TITLE_MAX_ROWS)
-    children = []
-    for i in range(len(lines)):
-        if i > 0:
-            children.append(render.Box(width = 1, height = 1))
-        children.append(render.Text(lines[i], color = color, font = TITLE_FONT))
-    return render.Column(children = children)
-
-def _incident_panel(inc, indicator):
-    name = inc.get("name", "?")
+def _incident_row(inc):
+    """One marquee row for an incident, colored by its impact."""
     impact = inc.get("impact", "?")
-    age_str = _format_age(_incident_age_s(inc))
-    affected = inc.get("components") or []
-    # The bottom row uses the big tile's indicator colors so the severity
-    # signal carries across the two frames; the colored band echoes the
-    # frame-1 left tile. The title itself carries the impact color in
-    # the body of the panel, so we don't need a separate impact-word row.
-    bottom_bg, bottom_fg = INDICATOR_COLORS.get(indicator, ("#444444", FG_WHITE))
-    bottom_text = age_str + " ago  " + str(len(affected)) + " hit"
-    return render.Column(
-        expanded = True,
-        main_align = "space_between",
-        children = [
-            render.Padding(
-                pad = (1, 1, 1, 0),
-                child = _title_block(name, impact),
-            ),
-            render.Box(
-                width = 64,
-                height = 7,
-                color = bottom_bg,
-                child = render.Padding(
-                    pad = (2, 1, 0, 0),
-                    child = render.Text(bottom_text, color = bottom_fg, font = "tom-thumb"),
-                ),
-            ),
-        ],
+    color = IMPACT_COLOR.get(impact, FG_WHITE)
+    name = _normalize_title(inc.get("name", "?"))
+    return render.Box(
+        width = INCIDENT_ROW_W,
+        height = INCIDENT_ROW_H,
+        child = render.Marquee(
+            width = INCIDENT_ROW_W,
+            child = render.Text(name, color = color, font = "tom-thumb"),
+        ),
+    )
+
+def _blank_row():
+    return render.Box(width = INCIDENT_ROW_W, height = INCIDENT_ROW_H)
+
+def _incident_marquees(incidents):
+    """Up to INCIDENT_ROWS_MAX full-width incident marquees stacked
+    top-down, with blank rows padding the bottom when fewer incidents
+    exist. Worst-impact incident occupies row 0 so a top-down scan
+    hits it first."""
+    n = len(incidents)
+    if n > INCIDENT_ROWS_MAX:
+        n = INCIDENT_ROWS_MAX
+    rows = []
+    for i in range(n):
+        rows.append(_incident_row(incidents[i]))
+    for _ in range(INCIDENT_ROWS_MAX - n):
+        rows.append(_blank_row())
+    return render.Column(children = rows)
+
+def _status_bar(indicator, affected_count, oldest_age_s):
+    """Bottom band echoing the frame-1 big tile: indicator-color
+    background, contrast-flipped foreground, '<age> ago  <N> hit' text."""
+    bg, fg = INDICATOR_COLORS.get(indicator, ("#444444", FG_WHITE))
+    if oldest_age_s != None:
+        text = _format_age(oldest_age_s) + " ago  " + str(affected_count) + " hit"
+    else:
+        text = str(affected_count) + " hit"
+    return render.Box(
+        width = 64,
+        height = STATUS_BAR_H,
+        color = bg,
+        child = render.Padding(
+            pad = (2, 1, 0, 0),
+            child = render.Text(text, color = fg, font = "tom-thumb"),
+        ),
     )
 
 def _affected_count(components):
@@ -392,9 +352,10 @@ def main(config):
     worst = _worst_incident(incidents)
     oldest_age = _incident_age_s(worst) if worst != None else None
     affected = _affected_count(components)
+    top_incs = _top_incidents(incidents, INCIDENT_ROWS_MAX)
 
-    print("[render] indicator=%s affected=%d incidents=%d worst=%s" % (
-        indicator, affected, len(incidents),
+    print("[render] indicator=%s affected=%d incidents=%d shown=%d worst=%s" % (
+        indicator, affected, len(incidents), len(top_incs),
         worst.get("name", "-") if worst else "-",
     ))
 
@@ -402,14 +363,24 @@ def main(config):
     grid = _component_grid(components_shown)
     grid_view = render.Row(expanded = True, children = [big, grid])
 
-    if worst == None:
+    if len(top_incs) == 0:
         body = grid_view
     else:
-        # Full-screen frame swap: the grid keeps the big severity tile,
-        # the incident frame ditches the tile and uses the full 64 px
-        # width so the marquee + impact text breathe.
+        # Frame 1: severity tile + component grid. Frame 2: drop the
+        # left tile, use the full width for up to INCIDENT_ROWS_MAX
+        # incident marquees stacked over a colored status bar at the
+        # bottom. The bar carries the severity color and age + hit
+        # count so the indicator signal still reads on frame 2.
         grid_frame = render.Box(width = 64, height = 32, color = "#000000", child = grid_view)
-        inc_frame = render.Box(width = 64, height = 32, color = "#000000", child = _incident_panel(worst, indicator))
+        inc_view = render.Column(
+            expanded = True,
+            main_align = "space_between",
+            children = [
+                _incident_marquees(top_incs),
+                _status_bar(indicator, affected, oldest_age),
+            ],
+        )
+        inc_frame = render.Box(width = 64, height = 32, color = "#000000", child = inc_view)
         body = render.Animation(
             children = [grid_frame] * GRID_FRAMES + [inc_frame] * INCIDENT_FRAMES,
         )

@@ -4,7 +4,7 @@ A Pixlet/Starlark Tidbyt app that polls [status.claude.com](https://status.claud
 
 - **Left tile (28×32):** big "OK" (when everything is green) or the count of affected components with the age of the worst-impact open incident below. Tile background is the StatusPage overall `status.indicator` color (green / yellow / orange / red / blue).
 - **Right column (36×32):** up to five rows of (colored dot + short component label). Capped at five because `tom-thumb` × 6 rows overflows the 32 px height; the dropped row is the lowest-priority operational component (`Claude for Government` under current conditions), but any degraded component is always shown regardless of priority.
-- **When an incident is open:** the whole display alternates between the layout above (~2 s) and a full-width incident view (~4.65 s) — the incident name renders static, word-wrapped to up to 4 rows in a fixed-width 3 × 5 px font, with the whole title colored by the incident's impact severity (red / orange / yellow / blue / white); and a colored band at the bottom with age + affected-component count. The big severity tile is dropped on the incident frame since the title color already carries the severity signal; the full 64 px of width lets the title breathe.
+- **When an incident is open:** the whole display alternates between the layout above (~4.35 s) and an incident view (~10.15 s) — up to 4 full-width horizontal-marquee rows (one per open incident, sorted worst-impact-first and colored by each incident's impact severity: red / critical, orange / major, yellow / minor, blue / maintenance, white / unknown) stacked over a colored status bar at the bottom. The bar takes the StatusPage `status.indicator` color and shows `<age> ago  <N> hit` so the indicator signal still reads at a glance. Rows for incident slots beyond the open count stay blank, so a single open incident occupies the top row with 3 blank rows below it.
 
 Data source: `GET https://status.claude.com/api/v2/summary.json` (Atlassian StatusPage, public, unauthenticated, CORS open). Cached at the Pixlet layer for 60 s.
 
@@ -44,7 +44,7 @@ See `config-example.yaml` for a template.
 
 - The big tile color is driven by the page-wide `status.indicator` field — `none` / `minor` / `major` / `critical` / `maintenance`. This is what `https://status.claude.com` itself uses for the top-of-page banner.
 - The "affected" count on the tile is the number of components whose `status` is anything other than `operational`.
-- The animated incident panel picks the worst-impact open incident (`critical` > `major` > `minor`) — when there are multiple, only the worst is shown. The full list is always available at status.claude.com.
+- The incident frame shows up to 4 open incidents, sorted by impact (`critical` > `major` > `minor`) then by recency. If there are more than 4 open at once, the full list is always available at status.claude.com.
 
 ## Design notes
 

@@ -56,30 +56,38 @@ Frame 1 (~5 s) — severity tile + component grid:
 └──────────┴───────────────────────┘
 ```
 
-Frame 2 (~4.65 s) — full-width incident view, big tile dropped:
+Frame 2 (~10.15 s) — full-width incident marquees stacked over a colored status bar:
 
 ```
 ┌─────────────────────────────────────┐
-│ We've suspended                     │  ← up to 4 wrapped rows in
-│ access to Claude                    │     CG-pixel-3x5-mono (impact-
-│ Mythos 5 and Claude                 │     severity-colored)
-│ Fable 5                             │
-│▓ 11d ago  4 hit ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│  ← age + count, full-width colored band
+│ <worst-impact alert marquee>        │  ← row 0  (64 × 6)
+│                                     │  ← row 1 blank
+│                                     │  ← row 2 blank
+│                                     │  ← row 3 blank
+│▓ 12d ago  4 hit ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│  ← status bar (64 × 7)
 └─────────────────────────────────────┘
 ```
 
-The big severity tile is redundant on the incident frame and is dropped. The title block uses `CG-pixel-3x5-mono`, a fixed-width 3 px × 5 px font: 60 / 3 = 20 chars per row and up to 4 rows = `4 * 5 + 3 * 1 = 23 px` (5 px per row plus 1 px transparent spacer between rows so the descenderless glyphs don't merge). The whole title is rendered in `IMPACT_COLOR[impact]` (red for critical, orange for major, yellow for minor, blue for maintenance, white as fallback), which carries the severity signal in place of the centered-impact-word row we used to have. Titles longer than `4 * 20 = 80 chars` get truncated at the end of the last visible row with an ellipsis.
+Frame 2 drops the left big tile and uses the full 64 px width for up to `INCIDENT_ROWS_MAX = 4` marquee rows, each `INCIDENT_ROW_W × INCIDENT_ROW_H = 64 × 6` (tom-thumb glyph height). A 7 px status bar at the bottom takes the indicator color and shows `<age> ago  <N> hit` in the contrast-flipped foreground — same `INDICATOR_COLORS[indicator]` `(bg, fg)` pair the frame-1 big tile uses, so the severity signal still reads at a glance even without the tile. Total `4 * 6 + 1 px gap + 7 px = 32 px`.
 
-We abandoned scrolling on this frame after several iterations:
+Each filled row is a horizontal `render.Marquee` carrying the incident's title in `IMPACT_COLOR[impact]` (red / orange / yellow / blue / white). `_top_incidents` sorts open incidents by impact severity (worst first), then by recency, and takes the first 4; the remainder of the column is `_blank_row()` boxes so the layout stays at exactly 32 px regardless of incident count. Worst-first ordering means a top-down scan hits the most severe alert immediately.
 
-- `Marquee(scroll_direction="vertical", height=12) > WrappedText(width=62)` — WrappedText clips to 2 lines and never advertises a taller natural height, so Marquee thinks the child already fits.
-- `Marquee(scroll_direction="vertical", height=12) > Column[Text, Text, ...]` — Column has a concrete `N * 6 px` natural height, but pixlet 0.34's **vertical** Marquee doesn't reliably advance its scroll position when nested inside the outer `render.Animation`.
-- Single-line horizontal `Marquee` worked but read too fast for long titles.
-- A 2-row **wrapping-marquee** construction (two horizontal Marquees over the same content padded and rotated by one window-width, ticking in lockstep at pixlet's fixed 1 px / frame) worked but still didn't give enough reading time, and the 1 px scroll rate is hard-coded in pixlet so we couldn't slow it down.
+The animation cycle is **14.5 s total**: `GRID_FRAMES = 87` (4.35 s, 30% of cycle) and `INCIDENT_FRAMES = 203` (10.15 s, 70% of cycle) at pixlet's 20 fps default. That's one full cycle per Tidbyt 15 s app slot — shorter cycles loop multiple times per slot, which we found distracting once the second-screen content went static. When no incident is open, no animation at all — just the static grid.
 
-Static word-wrapped text avoids the timing problem entirely — the reader has the full `INCIDENT_FRAMES` window (4.65 s) to read whatever title fits in 4 rows. The animation cycle is **6.65 s total**: `GRID_FRAMES = 40` (2 s, 30% of cycle) and `INCIDENT_FRAMES = 93` (4.65 s, 70% of cycle) at pixlet's 20 fps default. The 70 / 30 weighting gives the title most of the screen time; the short total cycle means the cycle re-starts ~2× per Tidbyt 15 s slot. When no incident is open, no animation — just the static grid.
+#### Marquee scroll-position quirk
 
-The bottom band uses the same `INDICATOR_COLORS[indicator]` (bg, fg) pair as the frame-1 big tile, so the indicator color and the contrast-flipped text color carry across frames.
+Each `render.Marquee` inside the incident frame uses pixlet's **global** Animation frame index to compute its scroll position, not a per-marquee local counter. So when frame 2 first comes into view at animation frame 87, the marquee is already 87 frames into its scroll cycle and starts mid-title rather than from the first character. The marquee continues scrolling at 1 px / frame for the remaining 203 frames of frame 2's window and loops back to the start when it runs off the left edge. Over the full 10.15 s of frame 2 each marquee covers about 200 px of horizontal travel, enough to scroll any plausible incident title past the viewer at least once — but if you wanted the marquee to *start* from character 0 of every visit, you'd need to align `GRID_FRAMES + INCIDENT_FRAMES` to a multiple of the marquee's content width, which is content-dependent and not stable across incidents.
+
+#### Earlier layouts we tried for frame 2
+
+Kept here so we don't relearn the lessons:
+
+- A full-width incident view (no left tile) with up to 4 wrapped lines of static text in `CG-pixel-3x5-mono`, colored by impact severity. Worked, but it diverged structurally from frame 1 (no big tile) and only ever showed one incident.
+- Same as above with a 2-row "wrapping marquee" construction (two horizontal Marquees over the same content padded and rotated by one window-width, ticking in lockstep at pixlet's fixed 1 px / frame). Worked, but the 1 px scroll rate is hard-coded and the user couldn't slow it down to a comfortable reading pace.
+- `Marquee(scroll_direction="vertical", height=12) > WrappedText(width=62)` — WrappedText clips to 2 lines and never advertises a taller natural height, so the Marquee thinks the child already fits.
+- `Marquee(scroll_direction="vertical", height=12) > Column[Text, Text, ...]` — Column has a concrete `N * 6 px` natural height, but pixlet 0.34's vertical Marquee doesn't reliably advance its scroll position when nested inside the outer `render.Animation`.
+
+Horizontal `Marquee` is the only construction that composes cleanly inside `render.Animation`, hence the current implementation uses it for every alert row.
 
 ### Five-row cap
 
@@ -139,7 +147,7 @@ To replay: `podman logs claudestat | grep -E '^\[(fetch|render)\]'`, slice by th
 - **StatusPage itself can go down.** Rare for Atlassian, but possible. The `_error_view` falls back to a grey `STATUS ERR` tile rather than blanking out. Worth eyeballing the failure mode on first deploy.
 - **Component count creep.** We cap the rendered list at 5 rows (`MAX_COMPONENT_ROWS`) to keep tom-thumb fitting in the 32 px right-column height; see "Five-row cap" above. The fallback short-namer truncates new names to 7 chars. If Anthropic ever adds enough components that the truncated list misses an important degradation, revisit the cap or move to a 2-column layout.
 - **Incident-status update cadence.** During an active incident StatusPage updates the page every few minutes. Our 60 s Pixlet cache plus 10 min push interval means up to ~11 min of staleness on the device — acceptable for ambient awareness, not for incident response. If we ever wanted to use this for incident-response triage, dropping the push interval to 120 s would be reasonable.
-- **Multiple incidents.** We only show the worst-impact open incident. Could be extended to cycle through several, but the title already takes the full 4.65 s incident frame to read, so >2 open incidents would exceed the Tidbyt's 15 s slot.
+- **More than 4 incidents.** Frame 2 holds at most `INCIDENT_ROWS_MAX = 4` marquee rows. If StatusPage ever has 5+ open at once, the 5th and beyond are dropped from the display — see `_top_incidents` for the sort key (impact desc, then recency desc). Bumping the cap would require shrinking each row's height below 8 px, which doesn't leave room for `tom-thumb`'s 6 px glyphs to breathe.
 - **Stale-looking ages.** `/api/v2/summary.json` only returns *unresolved* incidents. When the only remaining open incident is a long-running advisory (e.g., a suspended-access notice), the age field reads as "11d ago" or similar even though there have been more-recent (but already-resolved) incidents in the meantime. This is accurate — that's how long the surviving incident has been open — but it can mislead if you're scanning for "what just broke." If we ever want a "recently resolved" surface too, the `/api/v2/incidents.json` history endpoint carries resolved incidents; we'd define a freshness window (e.g., last 24 h) and merge that set with the unresolved list.
 - **TOS.** Atlassian's StatusPage terms allow JSON API consumption for monitoring purposes; the endpoints are explicitly public and CORS-open.
 
